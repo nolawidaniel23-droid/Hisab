@@ -25,9 +25,30 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Segoe 
 #nav{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);
   display:flex;padding-bottom:var(--safe-bottom);z-index:100;}
 .nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:10px 4px;gap:4px;background:none;border:none;color:var(--muted);cursor:pointer;font-size:10px;transition:color 0.15s;}
+  padding:8px 2px;gap:3px;background:none;border:none;color:var(--muted);cursor:pointer;font-size:9px;transition:color 0.15s;}
 .nav-btn.active{color:var(--accent);}
-.nav-icon{font-size:22px;line-height:1;}
+.nav-icon{font-size:20px;line-height:1;}
+/* LOCK SCREEN */
+#lock-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;gap:0;padding:40px 24px;background:var(--bg);}
+.lock-logo{font-size:56px;margin-bottom:16px;}
+.lock-title{font-size:24px;font-weight:800;letter-spacing:-0.5px;margin-bottom:4px;}
+.lock-sub{font-size:14px;color:var(--muted);margin-bottom:36px;text-align:center;}
+.pin-dots{display:flex;gap:16px;margin-bottom:32px;}
+.pin-dot{width:16px;height:16px;border-radius:50%;border:2px solid var(--border);transition:all 0.15s;}
+.pin-dot.filled{background:var(--accent);border-color:var(--accent);box-shadow:0 0 10px rgba(124,110,247,0.5);}
+.pin-dot.error{background:var(--red);border-color:var(--red);animation:shake 0.4s ease;}
+@keyframes shake{0%,100%{transform:translateX(0);}25%{transform:translateX(-6px);}75%{transform:translateX(6px);}}
+.pin-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;width:100%;max-width:280px;}
+.pin-btn{background:var(--surface);border:1px solid var(--border);color:var(--text);
+  height:68px;border-radius:50%;font-size:24px;font-weight:600;cursor:pointer;transition:all 0.1s;
+  display:flex;align-items:center;justify-content:center;}
+.pin-btn:active{background:var(--accent);border-color:var(--accent);transform:scale(0.93);}
+.pin-btn.del{font-size:20px;color:var(--muted);}
+.faceid-btn{display:flex;align-items:center;gap:8px;background:none;border:1px solid var(--border);
+  color:var(--text);padding:12px 24px;border-radius:50px;font-size:14px;font-weight:600;cursor:pointer;margin-top:16px;transition:all 0.15s;}
+.faceid-btn:hover{border-color:var(--accent);color:var(--accent);}
+.lock-setup{display:flex;flex-direction:column;align-items:center;width:100%;max-width:280px;gap:12px;}
 /* LOGIN */
 #login-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;
   height:100%;gap:32px;padding:40px 24px;}
@@ -250,11 +271,163 @@ const netWorth=()=>totalCash()+DB.savings.balance-loansOwed()-payables();
 function mTx(type){ const n=new Date(),y=n.getFullYear(),m=n.getMonth();
   return DB.transactions.filter(t=>{ const d=new Date(t.date+'T00:00:00'); return d.getFullYear()===y&&d.getMonth()===m&&(!type||t.type===type); }); }
 
+// ── Lock / PIN ─────────────────────────────────────
+const PIN_KEY  = 'hisab_pin_hash';
+const CRED_KEY = 'hisab_cred_id';
+let pinBuffer  = '';
+let pinMode    = 'unlock'; // 'unlock' | 'setup1' | 'setup2'
+let pinFirst   = '';
+let appUnlocked = false;
+
+function hashPin(pin){ let h=0; for(const c of pin) h=(h<<5)-h+c.charCodeAt(0); return h.toString(36); }
+function getStoredPin(){ return localStorage.getItem(PIN_KEY); }
+function savePin(pin){ localStorage.setItem(PIN_KEY, hashPin(pin)); }
+function hasBiometric(){ return !!localStorage.getItem(CRED_KEY); }
+
+async function registerBiometric(){
+  if(!window.PublicKeyCredential) return false;
+  try{
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const cred = await navigator.credentials.create({publicKey:{
+      challenge, rp:{name:'Hisab'}, user:{id:new Uint8Array(16),name:CU?.email||'user',displayName:'Hisab User'},
+      pubKeyCredParams:[{type:'public-key',alg:-7}],
+      authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'},
+      timeout:60000
+    }});
+    localStorage.setItem(CRED_KEY, btoa(String.fromCharCode(...new Uint8Array(cred.rawId))));
+    return true;
+  }catch(e){ return false; }
+}
+
+async function verifyBiometric(){
+  if(!window.PublicKeyCredential||!hasBiometric()) return false;
+  try{
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const rawId = Uint8Array.from(atob(localStorage.getItem(CRED_KEY)),c=>c.charCodeAt(0));
+    await navigator.credentials.get({publicKey:{
+      challenge, allowCredentials:[{type:'public-key',id:rawId}],
+      userVerification:'required', timeout:60000
+    }});
+    return true;
+  }catch(e){ return false; }
+}
+
+function showLockScreen(){
+  const hasPin = !!getStoredPin();
+  pinBuffer='';
+  pinMode = hasPin ? 'unlock' : 'setup1';
+  const subtitle = !hasPin ? 'Create a 4-digit PIN to secure Hisab' :
+    hasBiometric() ? 'Use Face ID or enter your PIN' : 'Enter your PIN to continue';
+  const faceBtn = hasPin ? `<button class="faceid-btn" onclick="W.tryFaceId()">🔒 Use Face ID</button>` : '';
+
+  document.getElementById('app').innerHTML=`
+  <div id="lock-screen">
+    <div class="lock-logo">💰</div>
+    <div class="lock-title">Hisab</div>
+    <div class="lock-sub">${!hasPin?'Set up a PIN to secure your app':subtitle}</div>
+    <div class="pin-dots" id="pin-dots">
+      ${[0,1,2,3].map(i=>`<div class="pin-dot" id="pd-${i}"></div>`).join('')}
+    </div>
+    <div class="pin-grid">
+      ${[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map(k=>`
+        <button class="pin-btn${k==='⌫'?' del':''}" ${k===''?'style="visibility:hidden;"':''} onclick="W.pinKey('${k}')">${k}</button>`).join('')}
+    </div>
+    ${faceBtn}
+    ${hasPin?`<button style="background:none;border:none;color:var(--muted);font-size:13px;margin-top:20px;cursor:pointer;" onclick="W.resetPin()">Forgot PIN? Sign out & reset</button>`:''}
+  </div>`;
+
+  // auto-trigger Face ID if already registered
+  if(hasPin && hasBiometric()) setTimeout(()=>W.tryFaceId(), 400);
+}
+
+function pinKey(k){
+  if(k==='⌫'){ pinBuffer=pinBuffer.slice(0,-1); updateDots(); return; }
+  if(pinBuffer.length>=4) return;
+  pinBuffer+=String(k);
+  updateDots();
+  if(pinBuffer.length===4) setTimeout(processPin,120);
+}
+
+function updateDots(error=false){
+  for(let i=0;i<4;i++){
+    const d=document.getElementById('pd-'+i);
+    if(!d) return;
+    d.className='pin-dot'+(i<pinBuffer.length?' filled':'')+(error?' error':'');
+  }
+}
+
+function processPin(){
+  if(pinMode==='unlock'){
+    if(hashPin(pinBuffer)===getStoredPin()){ unlockApp(); }
+    else{ updateDots(true); setTimeout(()=>{ pinBuffer=''; updateDots(); },600); }
+  } else if(pinMode==='setup1'){
+    pinFirst=pinBuffer; pinBuffer=''; pinMode='setup2';
+    document.querySelector('.lock-sub').textContent='Confirm your PIN';
+    updateDots();
+  } else if(pinMode==='setup2'){
+    if(pinBuffer===pinFirst){
+      savePin(pinBuffer);
+      // offer biometric
+      offerBiometric();
+    } else {
+      updateDots(true);
+      setTimeout(()=>{ pinBuffer=''; pinFirst=''; pinMode='setup1';
+        document.querySelector('.lock-sub').textContent='PINs didn\'t match. Try again.';
+        updateDots(); },700);
+    }
+  }
+}
+
+async function offerBiometric(){
+  if(!window.PublicKeyCredential){ unlockApp(); return; }
+  const supported = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().catch(()=>false);
+  if(!supported){ unlockApp(); return; }
+  // show offer
+  document.getElementById('app').innerHTML=`
+  <div id="lock-screen">
+    <div class="lock-logo">🔒</div>
+    <div class="lock-title">Enable Face ID?</div>
+    <div class="lock-sub">Use Face ID to unlock Hisab instantly</div>
+    <div class="lock-setup">
+      <button class="btn btn-primary btn-full" onclick="W.enableFaceId()">Enable Face ID</button>
+      <button class="btn btn-ghost btn-full" onclick="W.unlockApp()">Skip, use PIN only</button>
+    </div>
+  </div>`;
+}
+
+async function enableFaceId(){
+  const ok = await registerBiometric();
+  if(ok && Notification.permission==='granted'){ new Notification('Hisab 💰',{body:'Face ID enabled!'}); }
+  unlockApp();
+}
+
+async function tryFaceId(){
+  const ok = await verifyBiometric();
+  if(ok) unlockApp();
+  // if failed, just let user use PIN
+}
+
+function unlockApp(){
+  appUnlocked=true;
+  buildApp(); render();
+}
+
+function resetPin(){
+  if(!confirm('This will sign you out and reset your PIN. Continue?')) return;
+  localStorage.removeItem(PIN_KEY);
+  localStorage.removeItem(CRED_KEY);
+  signOut(auth);
+}
+
 // ── Auth ───────────────────────────────────────────
 onAuthStateChanged(auth,async user=>{
-  if(user){ CU=user; document.getElementById('app').innerHTML='<div class="loader">⏳</div>';
-    await loadData(); buildApp(); render(); }
-  else{ CU=null; buildLogin(); }
+  if(user){
+    CU=user;
+    document.getElementById('app').innerHTML='<div class="loader">⏳</div>';
+    await loadData();
+    if(appUnlocked){ buildApp(); render(); }
+    else{ showLockScreen(); }
+  } else{ CU=null; appUnlocked=false; buildLogin(); }
 });
 
 async function googleLogin(){
@@ -290,6 +463,7 @@ function buildApp(){
     <button class="nav-btn" id="nb-savings" onclick="W.nav('savings')"><span class="nav-icon">💰</span>Savings</button>
     <button class="nav-btn" id="nb-debts" onclick="W.nav('debts')"><span class="nav-icon">🤝</span>Debts</button>
     <button class="nav-btn" id="nb-stats" onclick="W.nav('stats')"><span class="nav-icon">🍩</span>Stats</button>
+    <button class="nav-btn" id="nb-settings" onclick="W.nav('settings')"><span class="nav-icon">⚙️</span>Settings</button>
   </nav>`;
 }
 
@@ -304,7 +478,7 @@ function nav(p,extra){
 function render(){
   const s=document.getElementById('screen'); if(!s) return;
   document.getElementById('global-fab')?.remove();
-  const map={dashboard:renderDash,accounts:renderAccounts,'account-detail':renderDetail,savings:renderSavings,monthly:renderMonthly,stats:renderStats,debts:renderDebts};
+  const map={dashboard:renderDash,accounts:renderAccounts,'account-detail':renderDetail,savings:renderSavings,monthly:renderMonthly,stats:renderStats,debts:renderDebts,settings:renderSettings};
   s.innerHTML=(map[page]||renderDash)();
   if(page==='stats') drawDonut();
   if(page==='dashboard') drawDashChart();
@@ -320,10 +494,7 @@ function renderDash(){
   return `
   <div class="page-header">
     <div class="page-title">Hisab</div>
-    <div class="user-bar">
-      ${CU.photoURL?`<img class="user-avatar" src="${CU.photoURL}"/>`:''}
-      <button class="signout-btn" onclick="W.doSignOut()">Sign out</button>
-    </div>
+    ${CU.photoURL?`<img class="user-avatar" src="${CU.photoURL}" onclick="W.nav('settings')" style="cursor:pointer;"/>`:''}
   </div>
   <div class="hero" style="padding-top:8px;">
     <div class="hero-label">Net Worth</div>
@@ -1010,6 +1181,84 @@ function scheduleReminder(){
 // Auto-schedule if already granted
 if(Notification.permission==='granted') scheduleReminder();
 
+// ── Settings ───────────────────────────────────────
+function renderSettings(){
+  const faceEnabled = hasBiometric();
+  const hasPin = !!getStoredPin();
+  return `
+  <div class="page-header">
+    <div class="page-title">Settings</div>
+  </div>
+
+  ${CU ? `
+  <div style="padding:0 20px 16px;">
+    <div class="card" style="display:flex;align-items:center;gap:14px;">
+      ${CU.photoURL?`<img style="width:48px;height:48px;border-radius:50%;object-fit:cover;" src="${CU.photoURL}"/>`:'<div style="width:48px;height:48px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:22px;">👤</div>'}
+      <div>
+        <div style="font-size:15px;font-weight:600;">${CU.displayName||'User'}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">${CU.email||''}</div>
+      </div>
+    </div>
+  </div>` : ''}
+
+  <div class="section-title">Security</div>
+  <div style="background:var(--surface);margin:0 20px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden;">
+    <div class="list-row" style="justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div class="list-icon" style="background:rgba(124,110,247,0.12);">🔒</div>
+        <div>
+          <div class="list-name">Face ID</div>
+          <div class="list-sub">${faceEnabled?'Enabled — tap to disable':'Disabled — tap to enable'}</div>
+        </div>
+      </div>
+      <button class="toggle ${faceEnabled?'on':''}" onclick="W.toggleFaceId()"></button>
+    </div>
+    <div class="list-row" onclick="W.changePinFlow()" style="cursor:pointer;">
+      <div class="list-icon" style="background:rgba(94,230,192,0.12);">🔢</div>
+      <div class="list-info">
+        <div class="list-name">${hasPin?'Change PIN':'Set up PIN'}</div>
+        <div class="list-sub">${hasPin?'Update your 4-digit PIN':'Create a PIN to lock the app'}</div>
+      </div>
+      <div style="color:var(--muted);font-size:18px;">›</div>
+    </div>
+  </div>
+
+  <div class="section-title">Account</div>
+  <div style="background:var(--surface);margin:0 20px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden;">
+    <div class="list-row" onclick="W.doSignOut()" style="cursor:pointer;">
+      <div class="list-icon" style="background:rgba(247,110,110,0.12);">🚪</div>
+      <div class="list-info">
+        <div class="list-name" style="color:var(--red);">Sign Out</div>
+        <div class="list-sub">You'll need to sign in again</div>
+      </div>
+      <div style="color:var(--muted);font-size:18px;">›</div>
+    </div>
+  </div>
+  <div style="height:20px;"></div>`;
+}
+
+async function toggleFaceId(){
+  if(hasBiometric()){
+    if(!confirm('Disable Face ID?')) return;
+    localStorage.removeItem(CRED_KEY);
+    render();
+  } else {
+    const supported = window.PublicKeyCredential &&
+      await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().catch(()=>false);
+    if(!supported){ alert('Face ID is not available on this device/browser.'); return; }
+    const ok = await registerBiometric();
+    if(ok){ alert('Face ID enabled!'); render(); }
+    else{ alert('Face ID setup failed. Try again.'); }
+  }
+}
+
+function changePinFlow(){
+  appUnlocked = false;
+  localStorage.removeItem(PIN_KEY);
+  localStorage.removeItem(CRED_KEY);
+  showLockScreen();
+}
+
 // ── Modal helpers ──────────────────────────────────
 function openModal(){ document.getElementById('modal-overlay').classList.add('open'); }
 function closeModal(){ document.getElementById('modal-overlay').classList.remove('open'); }
@@ -1022,7 +1271,9 @@ window.W={
   openSavModal, submitSav, delSav,
   openDebtModal, submitDebt, toggleDebt, deleteDebt,
   closeModal, closeModalOutside, doSignOut,
-  statsMonth: changeStatsMonth, reqNotif
+  statsMonth: changeStatsMonth, reqNotif,
+  pinKey, tryFaceId, enableFaceId, unlockApp, resetPin,
+  toggleFaceId, changePinFlow
 };
 </script>
 </body>
