@@ -656,9 +656,12 @@ function renderAccounts(){
   <div class="page-header"><div class="page-title">Accounts</div></div>
   <div style="background:var(--surface);margin:0 20px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden;">
     ${DB.accounts.map(a=>{ const bal=balOf(a.id);
+      const logoEl = a.logoUrl
+        ? `<img src="${a.logoUrl}" style="width:40px;height:40px;border-radius:12px;object-fit:cover;"/>`
+        : `<div class="list-icon" style="background:${a.color}22;font-size:22px;">${a.icon}</div>`;
       return `<div class="list-row" onclick="W.openDetail('${a.id}')" style="cursor:pointer;">
-        <div class="list-icon" style="background:${a.color}22;font-size:22px;">${a.icon}</div>
-        <div class="list-info"><div class="list-name">${a.name} Bank</div>
+        ${logoEl}
+        <div class="list-info"><div class="list-name">${a.name}</div>
           <div class="list-sub">${DB.transactions.filter(t=>t.accountId===a.id).length} transactions</div></div>
         <div class="list-right"><div class="list-amount" style="color:${bal>=0?'var(--green)':'var(--red)'};">${fmtETB(bal)}</div>
           <div style="font-size:11px;color:var(--muted);">Balance</div></div>
@@ -706,13 +709,24 @@ function renderDetail(){
 
   return `
   <div class="page-header"><button class="back-btn" onclick="W.nav('accounts')">‹ Back</button></div>
-  <div style="padding:4px 20px 16px;display:flex;align-items:center;gap:12px;">
-    <div style="font-size:32px;">${a.icon}</div>
-    <div><div style="font-size:22px;font-weight:700;">${a.name} Bank</div>
-      <div style="font-size:15px;color:var(--green);font-weight:600;">${fmtETB(balOf(a.id))}</div></div>
+  <div style="padding:4px 20px 16px;display:flex;align-items:center;gap:14px;">
+    <div style="position:relative;cursor:pointer;" onclick="W.uploadLogo('${a.id}')">
+      ${a.logoUrl
+        ? `<img src="${a.logoUrl}" style="width:56px;height:56px;border-radius:14px;object-fit:cover;border:2px solid var(--border);"/>`
+        : `<div style="width:56px;height:56px;border-radius:14px;background:${a.color}22;display:flex;align-items:center;justify-content:center;font-size:28px;border:2px solid var(--border);">${a.icon}</div>`}
+      <div style="position:absolute;bottom:-4px;right:-4px;background:var(--accent);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:11px;">📷</div>
+    </div>
+    <div>
+      <div style="font-size:22px;font-weight:700;">${a.name}</div>
+      <div style="font-size:15px;color:var(--green);font-weight:600;">${fmtETB(balOf(a.id))}</div>
+    </div>
   </div>
-  <div class="tabs">
-    ${['income','expense'].map(t=>`<button class="tab ${detailTab===t?'active':''}" onclick="W.setTab('${t}')">${t==='income'?'Income':'Expenses'}</button>`).join('')}
+  <input type="file" id="logo-input-${a.id}" accept="image/*" style="display:none;" onchange="W.handleLogoUpload('${a.id}', this)"/>
+  <div style="padding:0 20px 12px;display:flex;gap:10px;align-items:center;">
+    <div class="tabs" style="margin:0;flex:1;">
+      ${['income','expense'].map(t=>`<button class="tab ${detailTab===t?'active':''}" onclick="W.setTab('${t}')">${t==='income'?'Income':'Expenses'}</button>`).join('')}
+    </div>
+    <button class="btn btn-ghost" style="padding:8px 12px;font-size:12px;white-space:nowrap;" onclick="W.openImportModal('${detailId}')">📸 Import</button>
   </div>
   <div style="background:var(--surface);margin:0 20px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden;">${rows}</div>
   <div style="height:20px;"></div>`;
@@ -1183,6 +1197,211 @@ function scheduleReminder(){
 // Auto-schedule if already granted
 if(Notification.permission==='granted') scheduleReminder();
 
+// ── Logo Upload ────────────────────────────────────
+function uploadLogo(accountId){
+  document.getElementById('logo-input-'+accountId)?.click();
+}
+
+async function handleLogoUpload(accountId, input){
+  const file = input.files[0];
+  if(!file) return;
+
+  document.getElementById('app').innerHTML='<div class="loader">⏳ Saving logo...</div>';
+
+  try{
+    const base64 = await compressToBase64(file, 180);
+    await updateDoc(acRef(accountId), {logoUrl: base64});
+    const a = DB.accounts.find(x=>x.id===accountId);
+    if(a) a.logoUrl = base64;
+    buildApp(); render();
+  } catch(e){
+    alert('Failed: '+e.message);
+    buildApp(); render();
+  }
+}
+
+function compressToBase64(file, maxSize){
+  return new Promise((resolve,reject)=>{
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = ()=>{
+      const canvas = document.createElement('canvas');
+      const scale = Math.min(maxSize/img.width, maxSize/img.height, 1);
+      canvas.width  = img.width  * scale;
+      canvas.height = img.height * scale;
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+// ── Screenshot Import (Gemini) ─────────────────────
+let GEMINI_KEY = localStorage.getItem('hisab_gemini_key')||'';
+
+function openImportModal(accountId){
+  document.getElementById('modal').innerHTML=`
+    <button class="modal-close" onclick="W.closeModal()">✕</button>
+    <div class="modal-title">Import from Screenshot</div>
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      ${!GEMINI_KEY?`
+      <div style="background:rgba(247,199,110,0.1);border:1px solid rgba(247,199,110,0.3);border-radius:10px;padding:14px;">
+        <div style="font-size:13px;color:var(--yellow);font-weight:600;margin-bottom:6px;">⚡ Gemini API Key Required</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Get a free key at <strong>aistudio.google.com</strong> → Get API Key</div>
+        <input id="gemini-key-inp" placeholder="Paste your API key here..." style="font-size:13px;"/>
+        <button class="btn btn-primary btn-full" style="margin-top:10px;" onclick="W.saveGeminiKey()">Save Key</button>
+      </div>`:''}
+      <div class="form-group">
+        <div class="form-label">Bank Account</div>
+        <select id="import-account">
+          ${DB.accounts.map(a=>`<option value="${a.id}" ${a.id===accountId?'selected':''}>${a.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <div class="form-label">Upload Screenshot(s)</div>
+        <input type="file" id="import-screenshots" accept="image/*" multiple style="font-size:13px;padding:8px;"/>
+      </div>
+      <div style="font-size:12px;color:var(--muted);">You can upload multiple screenshots at once. The AI will read all transactions and show you a preview before saving.</div>
+      <button class="btn btn-primary btn-full" onclick="W.processScreenshots()">🤖 Analyze Screenshots</button>
+    </div>`;
+  openModal();
+}
+
+function saveGeminiKey(){
+  const key = document.getElementById('gemini-key-inp')?.value.trim();
+  if(!key){ alert('Paste your API key first.'); return; }
+  GEMINI_KEY = key;
+  localStorage.setItem('hisab_gemini_key', key);
+  render(); openImportModal(document.getElementById('import-account')?.value||DB.accounts[0]?.id);
+}
+
+async function processScreenshots(){
+  if(!GEMINI_KEY){ alert('Add your Gemini API key first.'); return; }
+  const files = document.getElementById('import-screenshots')?.files;
+  if(!files||files.length===0){ alert('Select at least one screenshot.'); return; }
+  const accountId = document.getElementById('import-account')?.value;
+
+  closeModal();
+  document.getElementById('app').innerHTML='<div class="loader">🤖 Reading screenshots...</div>';
+
+  try{
+    const results = [];
+    for(const file of files){
+      const b64 = await fileToBase64(file);
+      const txs = await geminiExtract(b64, accountId);
+      results.push(...txs);
+    }
+
+    if(results.length===0){
+      buildApp(); render();
+      alert('No transactions found. Try a clearer screenshot.');
+      return;
+    }
+
+    buildApp();
+    showImportPreview(results, accountId);
+  } catch(e){
+    buildApp(); render();
+    alert('Error: '+e.message);
+  }
+}
+
+function fileToBase64(file){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = e=>resolve(e.target.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function geminiExtract(base64, accountId){
+  const acctName = acct(accountId).name;
+  const prompt = `You are analyzing a bank statement or transaction screenshot from an Ethiopian bank account (${acctName}).
+Extract ALL transactions visible. For each transaction return a JSON array with objects:
+{"name":"description","amount":number,"type":"income" or "expense","date":"YYYY-MM-DD","category":"food|rent|fuel|clothes|transport|utilities|business|health|other","note":"any extra info"}
+- If date is missing use today's date
+- Amounts must be positive numbers
+- Respond ONLY with the JSON array, no other text.`;
+
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({contents:[{parts:[
+      {text: prompt},
+      {inline_data:{mime_type:'image/jpeg',data:base64}}
+    ]}]})
+  });
+
+  if(!res.ok){ const e=await res.json(); throw new Error(e.error?.message||'Gemini API error'); }
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text||'[]';
+  const clean = text.replace(/```json\n?/g,'').replace(/```/g,'').trim();
+  return JSON.parse(clean);
+}
+
+function showImportPreview(txs, accountId){
+  const s = document.getElementById('screen');
+  const today = new Date().toISOString().split('T')[0];
+
+  s.innerHTML=`
+  <div class="page-header">
+    <button class="back-btn" onclick="W.nav('accounts')">✕ Cancel</button>
+    <div style="font-size:15px;font-weight:600;">${txs.length} found</div>
+  </div>
+  <div style="padding:0 20px 12px;">
+    <div class="card" style="background:rgba(94,230,192,0.08);border-color:rgba(94,230,192,0.2);">
+      <div style="font-size:13px;color:var(--green);">✅ AI found <strong>${txs.length} transactions</strong>. Review and confirm below.</div>
+    </div>
+  </div>
+  <div style="background:var(--surface);margin:0 20px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden;">
+    ${txs.map((t,i)=>{
+      const c=cat(t.category||'other');
+      return `<div class="list-row" style="flex-wrap:wrap;gap:8px;">
+        <div class="list-icon" style="background:${t.type==='income'?'rgba(94,230,192,0.12)':'rgba(247,110,110,0.12)'};">${c.icon}</div>
+        <div class="list-info">
+          <div class="list-name">${t.name}</div>
+          <div class="list-sub">${t.date} · ${c.label}</div>
+        </div>
+        <div class="list-right">
+          <div class="list-amount" style="color:${t.type==='income'?'var(--green)':'var(--red)'};">
+            ${t.type==='income'?'+':'-'}${fmtETB(t.amount)}
+          </div>
+        </div>
+        <button onclick="W.removeImportRow(${i})" style="background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;opacity:0.5;">✕</button>
+      </div>`;
+    }).join('')}
+  </div>
+  <div style="padding:16px 20px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    <button class="btn btn-ghost btn-full" onclick="W.nav('accounts')">Cancel</button>
+    <button class="btn btn-primary btn-full" onclick="W.confirmImport('${accountId}')">Save All</button>
+  </div>`;
+
+  window._importTxs = txs;
+  window._importAccountId = accountId;
+}
+
+function removeImportRow(i){
+  window._importTxs.splice(i,1);
+  showImportPreview(window._importTxs, window._importAccountId);
+}
+
+async function confirmImport(accountId){
+  document.getElementById('app').innerHTML='<div class="loader">💾 Saving...</div>';
+  const today = new Date().toISOString().split('T')[0];
+  for(const t of window._importTxs){
+    const tx={accountId,type:t.type,amount:Number(t.amount),currency:'ETB',
+      category:t.category||'other',name:t.name,note:t.note||'',
+      date:t.date||today,recurring:false,paid:false};
+    const ref2=await addDoc(txCol(),tx);
+    DB.transactions.push({...tx,id:ref2.id});
+  }
+  window._importTxs=[];
+  buildApp(); render();
+}
+
 // ── Settings ───────────────────────────────────────
 function renderSettings(){
   const faceEnabled = hasBiometric();
@@ -1275,7 +1494,10 @@ window.W={
   closeModal, closeModalOutside, doSignOut,
   statsMonth: changeStatsMonth, reqNotif,
   pinKey, tryFaceId, enableFaceId, unlockApp, resetPin,
-  toggleFaceId, changePinFlow
+  toggleFaceId, changePinFlow,
+  uploadLogo, handleLogoUpload,
+  openImportModal, saveGeminiKey, processScreenshots,
+  removeImportRow, confirmImport
 };
 </script>
 </body>
