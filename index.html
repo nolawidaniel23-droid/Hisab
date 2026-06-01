@@ -225,12 +225,14 @@ const cat    = id=>CATS.find(c=>c.id===id)||{label:'',icon:'📌'};
 const acct   = id=>DB.accounts.find(a=>a.id===id)||{name:'',color:'#7c6ef7',icon:'🏦'};
 
 // ── Firestore refs ─────────────────────────────────
-const acRef   = id=>doc(db,'users',CU.uid,'accounts',id);
-const txCol   = ()=>collection(db,'users',CU.uid,'transactions');
-const txRef   = id=>doc(db,'users',CU.uid,'transactions',id);
-const savRef  = ()=>doc(db,'users',CU.uid,'savings','main');
-const debtCol = ()=>collection(db,'users',CU.uid,'debts');
-const debtRef = id=>doc(db,'users',CU.uid,'debts',id);
+const acRef    = id=>doc(db,'users',CU.uid,'accounts',id);
+const txCol    = ()=>collection(db,'users',CU.uid,'transactions');
+const txRef    = id=>doc(db,'users',CU.uid,'transactions',id);
+const savRef   = ()=>doc(db,'users',CU.uid,'savings','main');
+const debtCol  = ()=>collection(db,'users',CU.uid,'debts');
+const debtRef  = id=>doc(db,'users',CU.uid,'debts',id);
+const logoRef  = id=>doc(db,'shared_logos',id);
+const isAdmin  = ()=>CU?.email==='nolawidaniel23@gmail.com';
 
 // ── Load data ──────────────────────────────────────
 async function loadData(){
@@ -254,6 +256,12 @@ async function loadData(){
   else{ DB.savings={balance:0,goal:10000,history:[]}; await setDoc(savRef(),DB.savings); }
   const debtSnap = await getDocs(debtCol());
   DB.debts = debtSnap.docs.map(d=>({...d.data(),id:d.id}));
+
+  // load shared logos into accounts
+  for(const a of DB.accounts){
+    const lSnap = await getDoc(logoRef(a.id));
+    if(lSnap.exists()) a.logoUrl = lSnap.data().url;
+  }
 }
 
 // ── Computed ───────────────────────────────────────
@@ -710,18 +718,18 @@ function renderDetail(){
   return `
   <div class="page-header"><button class="back-btn" onclick="W.nav('accounts')">‹ Back</button></div>
   <div style="padding:4px 20px 16px;display:flex;align-items:center;gap:14px;">
-    <div style="position:relative;cursor:pointer;" onclick="W.uploadLogo('${a.id}')">
+    <div style="position:relative;${isAdmin()?'cursor:pointer;':''}" ${isAdmin()?`onclick="W.uploadLogo('${a.id}')"`:''}">
       ${a.logoUrl
         ? `<img src="${a.logoUrl}" style="width:56px;height:56px;border-radius:14px;object-fit:cover;border:2px solid var(--border);"/>`
         : `<div style="width:56px;height:56px;border-radius:14px;background:${a.color}22;display:flex;align-items:center;justify-content:center;font-size:28px;border:2px solid var(--border);">${a.icon}</div>`}
-      <div style="position:absolute;bottom:-4px;right:-4px;background:var(--accent);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:11px;">📷</div>
+      ${isAdmin()?`<div style="position:absolute;bottom:-4px;right:-4px;background:var(--accent);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:11px;">📷</div>`:''}
     </div>
     <div>
       <div style="font-size:22px;font-weight:700;">${a.name}</div>
       <div style="font-size:15px;color:var(--green);font-weight:600;">${fmtETB(balOf(a.id))}</div>
     </div>
   </div>
-  <input type="file" id="logo-input-${a.id}" accept="image/*" style="display:none;" onchange="W.handleLogoUpload('${a.id}', this)"/>
+  ${isAdmin()?`<input type="file" id="logo-input-${a.id}" accept="image/*" style="display:none;" onchange="W.handleLogoUpload('${a.id}', this)"/>`:''}
   <div style="padding:0 20px 12px;display:flex;gap:10px;align-items:center;">
     <div class="tabs" style="margin:0;flex:1;">
       ${['income','expense'].map(t=>`<button class="tab ${detailTab===t?'active':''}" onclick="W.setTab('${t}')">${t==='income'?'Income':'Expenses'}</button>`).join('')}
@@ -1203,6 +1211,7 @@ function uploadLogo(accountId){
 }
 
 async function handleLogoUpload(accountId, input){
+  if(!isAdmin()){ alert('Only the admin can change logos.'); return; }
   const file = input.files[0];
   if(!file) return;
 
@@ -1210,7 +1219,7 @@ async function handleLogoUpload(accountId, input){
 
   try{
     const base64 = await compressToBase64(file, 180);
-    await updateDoc(acRef(accountId), {logoUrl: base64});
+    await setDoc(logoRef(accountId), {url: base64});
     const a = DB.accounts.find(x=>x.id===accountId);
     if(a) a.logoUrl = base64;
     buildApp(); render();
