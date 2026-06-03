@@ -973,25 +973,30 @@ function renderDebts(){
   const totalBorrowed = unpaidBorrowed.reduce((s,d)=>s+d.amount,0);
   const totalPayable  = unpaidPayable.reduce((s,d)=>s+d.amount,0);
 
-  const debtRow = d=>`
-    <div class="list-row">
+  const debtRow = d=>{
+    const remaining = d.remaining!==undefined ? d.remaining : d.amount;
+    const partial = !d.paid && remaining < d.amount;
+    const clr = d.type==='lent'?'var(--blue)':d.type==='borrowed'?'var(--red)':'var(--yellow)';
+    const paidPct = ((d.amount-remaining)/d.amount*100).toFixed(0);
+    return `<div class="list-row">
       <div class="list-icon" style="background:${d.type==='lent'?'rgba(110,175,247,0.15)':d.type==='borrowed'?'rgba(247,110,110,0.15)':'rgba(247,199,110,0.15)'};">
         ${d.type==='lent'?'🤲':d.type==='borrowed'?'💸':'📋'}
       </div>
       <div class="list-info">
         <div class="list-name">${d.name}</div>
         <div class="list-sub">${d.note?d.note+' · ':''}${d.date}</div>
+        ${partial?`<div style="margin-top:4px;"><div class="progress-wrap" style="height:4px;width:100px;">
+          <div class="progress-bar" style="width:${paidPct}%;background:${clr};"></div>
+        </div><div style="font-size:10px;color:var(--muted);margin-top:2px;">${paidPct}% paid · ${fmt(remaining,d.currency||'ETB')} left</div></div>`:''}
       </div>
       <div class="list-right" style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
-        <div class="list-amount" style="color:${d.type==='lent'?'var(--blue)':d.type==='borrowed'?'var(--red)':'var(--yellow)'};">
-          ${fmt(d.amount,d.currency||'ETB')}
-        </div>
-        <button class="chip ${d.paid?'green':'red'}" onclick="W.toggleDebt('${d.id}')" style="cursor:pointer;">
-          ${d.paid?'✓ Settled':'Unpaid'}
-        </button>
+        <div class="list-amount" style="color:${clr};">${fmt(d.amount,d.currency||'ETB')}</div>
+        ${!d.paid?`<button class="chip red" onclick="W.toggleDebt('${d.id}')" style="cursor:pointer;">+ Pay</button>`
+          :`<div class="chip green">✓ Settled</div>`}
       </div>
       <button onclick="W.deleteDebt('${d.id}')" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 6px;opacity:0.5;">✕</button>
     </div>`;
+  };
 
   const section = (title, list, emptyTxt, color) => `
     <div class="section-title">${title}</div>
@@ -1039,10 +1044,23 @@ function openDebtModal(){
     <div style="display:flex;flex-direction:column;gap:16px;">
       <div class="form-group">
         <div class="form-label">Type</div>
-        <select id="debt-type">
+        <select id="debt-type" onchange="W.toggleDebtAccountPicker()">
           <option value="lent">I lent money (they owe me)</option>
           <option value="borrowed">I borrowed money (I owe them)</option>
           <option value="payable">Account payable (I owe a bill)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <div class="form-label">New or Old?</div>
+        <select id="debt-age" onchange="W.toggleDebtAccountPicker()">
+          <option value="new">New — happened now (affects bank balance)</option>
+          <option value="old">Old — already happened (just tracking)</option>
+        </select>
+      </div>
+      <div id="debt-account-wrap" class="form-group">
+        <div class="form-label">Which account?</div>
+        <select id="debt-account">
+          ${DB.accounts.map(a=>`<option value="${a.id}">${a.name}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -1064,24 +1082,101 @@ function openDebtModal(){
   openModal();
 }
 
+function toggleDebtAccountPicker(){
+  const type = document.getElementById('debt-type')?.value;
+  const age  = document.getElementById('debt-age')?.value;
+  const wrap = document.getElementById('debt-account-wrap');
+  if(wrap) wrap.style.display = age==='new' ? 'flex' : 'none';
+}
+
 async function submitDebt(){
-  const type   = document.getElementById('debt-type')?.value;
-  const name   = document.getElementById('debt-name')?.value.trim()||'';
-  const amount = parseFloat(document.getElementById('debt-amount')?.value||0);
-  const cur    = document.getElementById('debt-cur')?.value||'ETB';
-  const date   = document.getElementById('debt-date')?.value||'';
-  const note   = document.getElementById('debt-note')?.value.trim()||'';
+  const type      = document.getElementById('debt-type')?.value;
+  const age       = document.getElementById('debt-age')?.value;
+  const accountId = document.getElementById('debt-account')?.value;
+  const name      = document.getElementById('debt-name')?.value.trim()||'';
+  const amount    = parseFloat(document.getElementById('debt-amount')?.value||0);
+  const cur       = document.getElementById('debt-cur')?.value||'ETB';
+  const date      = document.getElementById('debt-date')?.value||'';
+  const note      = document.getElementById('debt-note')?.value.trim()||'';
   if(!name||isNaN(amount)||amount<=0||!date){ alert('Fill in name, amount, and date.'); return; }
-  const debt={type,name,amount,currency:cur,date,note,paid:false};
+
+  const debt={type,name,amount,currency:cur,date,note,paid:false,remaining:amount,payments:[]};
+
+  // if new, affect bank balance
+  if(age==='new' && accountId){
+    const txType = type==='lent'?'expense': type==='borrowed'?'income': 'expense';
+    const tx={accountId,type:txType,amount,currency:cur,category:'other',
+      name:type==='lent'?`Lent to ${name}`:type==='borrowed'?`Borrowed from ${name}`:`Paid to ${name}`,
+      note,date,recurring:false,paid:false};
+    const txR=await addDoc(txCol(),tx);
+    DB.transactions.push({...tx,id:txR.id});
+    debt.linkedAccountId = accountId;
+  }
+
   const ref=await addDoc(debtCol(),debt);
   DB.debts.push({...debt,id:ref.id});
   closeModal(); render();
 }
 
-async function toggleDebt(id){
+function toggleDebt(id){
   const d=DB.debts.find(x=>x.id===id); if(!d) return;
-  d.paid=!d.paid;
-  await updateDoc(debtRef(id),{paid:d.paid}); render();
+  const remaining = d.remaining||d.amount;
+  const today=new Date().toISOString().split('T')[0];
+  const isOwed = d.type==='lent'; // they pay me → goes into my account
+  const isIOwe = d.type==='borrowed'||d.type==='payable'; // I pay → comes out of my account
+
+  document.getElementById('modal').innerHTML=`
+    <button class="modal-close" onclick="W.closeModal()">✕</button>
+    <div class="modal-title">Record Payment</div>
+    <div style="padding:12px 0 16px;">
+      <div style="font-size:13px;color:var(--muted);">
+        ${d.type==='lent'?`${d.name} is paying you back`:d.type==='borrowed'?`You are paying back ${d.name}`:`You are paying ${d.name}`}
+      </div>
+      <div style="font-size:18px;font-weight:700;color:var(--red);margin-top:4px;">
+        Remaining: ${fmt(remaining, d.currency||'ETB')}
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div class="form-group"><div class="form-label">Amount Paid</div>
+        <input id="pay-amount" type="number" placeholder="0.00" min="0" step="0.01" value="${remaining}"/></div>
+      <div class="form-group"><div class="form-label">${isOwed?'Receive into account':'Pay from account'}</div>
+        <select id="pay-account">
+          ${DB.accounts.map(a=>`<option value="${a.id}">${a.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><div class="form-label">Date</div>
+        <input id="pay-date" type="date" value="${today}"/></div>
+      <button class="btn btn-primary btn-full" onclick="W.submitPayment('${id}')">Confirm Payment</button>
+    </div>`;
+  openModal();
+}
+
+async function submitPayment(id){
+  const d=DB.debts.find(x=>x.id===id); if(!d) return;
+  const amount    = parseFloat(document.getElementById('pay-amount')?.value||0);
+  const accountId = document.getElementById('pay-account')?.value;
+  const date      = document.getElementById('pay-date')?.value||'';
+  if(isNaN(amount)||amount<=0){ alert('Enter a valid amount.'); return; }
+
+  const remaining = (d.remaining||d.amount) - amount;
+  const paid      = remaining<=0;
+
+  // record bank transaction
+  const isOwed = d.type==='lent';
+  const txType = isOwed?'income':'expense';
+  const txName = isOwed?`${d.name} paid back`:d.type==='borrowed'?`Paid back ${d.name}`:`Paid ${d.name}`;
+  const tx={accountId,type:txType,amount:Math.min(amount,d.remaining||d.amount),currency:d.currency||'ETB',
+    category:'other',name:txName,note:'Debt payment',date,recurring:false,paid:false};
+  const txR=await addDoc(txCol(),tx);
+  DB.transactions.push({...tx,id:txR.id});
+
+  // update debt
+  const payments=[...(d.payments||[]),{amount,accountId,date}];
+  const updates={remaining:Math.max(0,remaining),paid,payments};
+  await updateDoc(debtRef(id),updates);
+  Object.assign(d,updates);
+
+  closeModal(); render();
 }
 
 async function deleteDebt(id){
@@ -1784,7 +1879,7 @@ window.W={
   openAddModal, selCat, togRec, submitTx,
   openSavModal, submitSav, delSav,
   editTx, saveEditTx,
-  openDebtModal, submitDebt, toggleDebt, deleteDebt,
+  openDebtModal, submitDebt, toggleDebtAccountPicker, toggleDebt, submitPayment, deleteDebt,
   setImportCat,
   closeModal, closeModalOutside, doSignOut,
   statsMonth: changeStatsMonth, reqNotif, openCatDetail, openDayDetail,
