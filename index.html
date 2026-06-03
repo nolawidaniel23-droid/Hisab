@@ -1199,16 +1199,18 @@ function renderStats(){
         const pct=(amt/maxDay*100).toFixed(1);
         const d=new Date(date+'T00:00:00');
         const label=d.toLocaleDateString('en',{weekday:'short',month:'short',day:'numeric'});
-        const dayTxs=expenses.filter(t=>t.date===date);
-        return `<div style="padding:12px 16px;border-bottom:1px solid var(--border);">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <div style="font-size:13px;font-weight:600;">${label}</div>
-            <div style="font-size:13px;font-weight:700;color:var(--red);">${fmtETB(amt)}</div>
+        const barColor=pct>75?'var(--red)':pct>40?'var(--yellow)':'var(--accent)';
+        return `<div onclick="W.openDayDetail('${date}')" style="padding:12px 16px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:12px;">
+          <div style="flex:1;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <div style="font-size:13px;font-weight:600;">${label}</div>
+              <div style="font-size:13px;font-weight:700;color:var(--red);">${fmtETB(amt)}</div>
+            </div>
+            <div class="progress-wrap" style="height:6px;">
+              <div class="progress-bar" style="width:${pct}%;background:${barColor};${pct>75?'box-shadow:0 0 8px var(--red);':''}"></div>
+            </div>
           </div>
-          <div class="progress-wrap" style="height:6px;margin-bottom:6px;">
-            <div class="progress-bar" style="width:${pct}%;background:${pct>75?'var(--red)':pct>40?'var(--yellow)':'var(--accent)'};"></div>
-          </div>
-          <div style="font-size:11px;color:var(--muted);">${dayTxs.map(t=>cat(t.category||'other').icon+' '+t.name).join(' · ')}</div>
+          <div style="color:var(--muted);font-size:18px;">›</div>
         </div>`;
       }).join('');
     })()}
@@ -1310,6 +1312,43 @@ function drawDonut(){
   ctx.arc(cx,cy,innerR-2,0,2*Math.PI);
   ctx.fillStyle='#1a1a22';
   ctx.fill();
+}
+
+function openDayDetail(date){
+  const d = new Date(date+'T00:00:00');
+  const label = d.toLocaleDateString('en',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  const txs = DB.transactions.filter(t=>t.date===date&&t.type==='expense').sort((a,b)=>b.amount-a.amount);
+  const total = txs.reduce((s,t)=>s+t.amount,0);
+
+  document.getElementById('modal').innerHTML=`
+    <button class="modal-close" onclick="W.closeModal()">✕</button>
+    <div style="margin-bottom:16px;">
+      <div class="modal-title">${label}</div>
+      <div style="font-size:13px;color:var(--muted);margin-top:2px;">${txs.length} transactions</div>
+    </div>
+    <div class="card" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-size:13px;color:var(--muted);">Total spent</div>
+      <div style="font-size:20px;font-weight:800;color:var(--red);">${fmtETB(total)}</div>
+    </div>
+    <div style="background:var(--surface2);border-radius:12px;overflow:hidden;">
+      ${txs.length===0
+        ? `<div class="empty"><div class="empty-icon">📅</div>No expenses</div>`
+        : txs.map(t=>{
+            const c=cat(t.category||'other'); const a=acct(t.accountId);
+            return `<div class="list-row" onclick="W.closeModal();W.openDetail('${t.accountId}');W.setTab('expense');" style="cursor:pointer;">
+              <div class="list-icon" style="background:${a.color}22;">${c.icon}</div>
+              <div class="list-info">
+                <div class="list-name">${t.name}</div>
+                <div class="list-sub">${c.label} · ${a.name}${t.note?' · '+t.note:''}</div>
+              </div>
+              <div class="list-right">
+                <div class="list-amount" style="color:var(--red);">${fmtETB(t.amount)}</div>
+              </div>
+            </div>`;
+          }).join('')
+      }
+    </div>`;
+  openModal();
 }
 
 function openCatDetail(catId){
@@ -1748,7 +1787,7 @@ window.W={
   openDebtModal, submitDebt, toggleDebt, deleteDebt,
   setImportCat,
   closeModal, closeModalOutside, doSignOut,
-  statsMonth: changeStatsMonth, reqNotif, openCatDetail,
+  statsMonth: changeStatsMonth, reqNotif, openCatDetail, openDayDetail,
   pinKey, tryFaceId, enableFaceId, unlockApp, resetPin,
   toggleFaceId, changePinFlow,
   uploadLogo, handleLogoUpload,
