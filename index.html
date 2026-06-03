@@ -490,7 +490,7 @@ function render(){
   document.getElementById('global-fab')?.remove();
   const map={dashboard:renderDash,accounts:renderAccounts,'account-detail':renderDetail,savings:renderSavings,monthly:renderMonthly,stats:renderStats,debts:renderDebts,settings:renderSettings};
   s.innerHTML=(map[page]||renderDash)();
-  if(page==='stats') drawDonut();
+  if(page==='stats'){ drawDonut(); drawDailyChart(); }
   if(page==='dashboard') drawDashChart();
 }
 
@@ -1117,12 +1117,13 @@ function renderStats(){
 
   const legendRows = segments.map(s=>{
     const pct=total>0?(s.val/total*100).toFixed(1):0;
-    return `<div>
+    return `<div onclick="W.openCatDetail('${s.id}')" style="cursor:pointer;padding:8px;border-radius:10px;transition:background 0.15s;" onmouseenter="this.style.background='var(--surface2)'" onmouseleave="this.style.background='transparent'">
       <div class="legend-row">
-        <div class="legend-dot" style="background:${s.color};"></div>
+        <div class="legend-dot" style="background:${s.color};box-shadow:0 0 6px ${s.color};"></div>
         <div class="legend-name">${s.cat.icon} ${s.cat.label||s.id}</div>
         <div class="legend-pct">${pct}%</div>
         <div class="legend-val">${fmtETB(s.val)}</div>
+        <div style="color:var(--muted);font-size:14px;margin-left:4px;">›</div>
       </div>
       <div class="legend-bar-wrap" style="margin-left:20px;">
         <div class="legend-bar" style="width:${pct}%;background:${s.color};"></div>
@@ -1174,8 +1175,101 @@ function renderStats(){
       </div>
       <div class="legend">${legendRows}</div>`
   }
+
+  <div class="section-title">📅 Daily Spending</div>
+  <div style="padding:0 20px 16px;">
+    <div class="card" style="padding:16px 12px;">
+      <canvas id="daily-canvas" height="120" style="width:100%;"></canvas>
+    </div>
+  </div>
+
+  <div class="section-title">🧾 Daily Breakdown</div>
+  <div style="background:var(--surface);margin:0 20px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden;">
+    ${(()=>{
+      // group expenses by day
+      const dayMap={};
+      expenses.forEach(t=>{
+        const d=t.date||'';
+        dayMap[d]=(dayMap[d]||0)+t.amount;
+      });
+      const days=Object.entries(dayMap).sort((a,b)=>b[0].localeCompare(a[0]));
+      if(days.length===0) return '<div class="empty"><div class="empty-icon">📅</div>No daily data</div>';
+      const maxDay=Math.max(...days.map(d=>d[1]));
+      return days.map(([date,amt])=>{
+        const pct=(amt/maxDay*100).toFixed(1);
+        const d=new Date(date+'T00:00:00');
+        const label=d.toLocaleDateString('en',{weekday:'short',month:'short',day:'numeric'});
+        const dayTxs=expenses.filter(t=>t.date===date);
+        return `<div style="padding:12px 16px;border-bottom:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div style="font-size:13px;font-weight:600;">${label}</div>
+            <div style="font-size:13px;font-weight:700;color:var(--red);">${fmtETB(amt)}</div>
+          </div>
+          <div class="progress-wrap" style="height:6px;margin-bottom:6px;">
+            <div class="progress-bar" style="width:${pct}%;background:${pct>75?'var(--red)':pct>40?'var(--yellow)':'var(--accent)'};"></div>
+          </div>
+          <div style="font-size:11px;color:var(--muted);">${dayTxs.map(t=>cat(t.category||'other').icon+' '+t.name).join(' · ')}</div>
+        </div>`;
+      }).join('');
+    })()}
+  </div>
   ${notifSection}
   <div style="height:20px;"></div>`;
+}
+
+function drawDailyChart(){
+  const canvas = document.getElementById('daily-canvas');
+  if(!canvas) return;
+  canvas.width = canvas.offsetWidth || 300;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = 120;
+
+  const expenses = DB.transactions.filter(t=>{
+    if(t.type!=='expense') return false;
+    const d=new Date(t.date+'T00:00:00');
+    return d.getFullYear()===statsYear && d.getMonth()===statsMonth;
+  });
+
+  // build days in month
+  const daysInMonth = new Date(statsYear, statsMonth+1, 0).getDate();
+  const dayTotals = Array(daysInMonth).fill(0);
+  expenses.forEach(t=>{
+    const d=new Date(t.date+'T00:00:00');
+    if(d.getMonth()===statsMonth) dayTotals[d.getDate()-1]+=t.amount;
+  });
+
+  const maxVal = Math.max(...dayTotals, 1);
+  const barW = Math.max(2, (W - 20) / daysInMonth - 2);
+  const today = new Date().getDate()-1;
+
+  ctx.clearRect(0,0,W,H);
+
+  dayTotals.forEach((val,i)=>{
+    const x = 10 + i*((W-20)/daysInMonth);
+    const barH = val>0 ? Math.max(4, (val/maxVal)*(H-24)) : 2;
+    const y = H - 16 - barH;
+    const isToday = i===today && statsMonth===new Date().getMonth() && statsYear===new Date().getFullYear();
+    const isHigh = val/maxVal > 0.7;
+
+    // glow for high spending days
+    if(isHigh){
+      ctx.shadowColor='#f76e6e';
+      ctx.shadowBlur=8;
+    }
+    ctx.fillStyle = isToday ? '#7c6ef7' : isHigh ? '#f76e6e' : val>0 ? '#5ee6c0' : '#2e2e3e';
+    ctx.beginPath();
+    ctx.roundRect(x, y, barW, barH, 3);
+    ctx.fill();
+    ctx.shadowBlur=0;
+
+    // day number every 5 days
+    if((i+1)%5===0||i===0){
+      ctx.fillStyle='#7a7a94';
+      ctx.font='9px system-ui';
+      ctx.textAlign='center';
+      ctx.fillText(i+1, x+barW/2, H-2);
+    }
+  });
 }
 
 function drawDonut(){
@@ -1216,6 +1310,51 @@ function drawDonut(){
   ctx.arc(cx,cy,innerR-2,0,2*Math.PI);
   ctx.fillStyle='#1a1a22';
   ctx.fill();
+}
+
+function openCatDetail(catId){
+  const c = cat(catId);
+  const txs = DB.transactions.filter(t=>{
+    if(t.type!=='expense'||t.category!==catId) return false;
+    const d=new Date(t.date+'T00:00:00');
+    return d.getFullYear()===statsYear && d.getMonth()===statsMonth;
+  }).sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  const total = txs.reduce((s,t)=>s+t.amount,0);
+  const colorIdx = STAT_COLORS[DB.transactions.filter(t=>t.type==='expense').findIndex(t=>t.category===catId)%STAT_COLORS.length] || '#7c6ef7';
+
+  document.getElementById('modal').innerHTML=`
+    <button class="modal-close" onclick="W.closeModal()">✕</button>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+      <div style="font-size:32px;">${c.icon}</div>
+      <div>
+        <div class="modal-title" style="margin-bottom:2px;">${c.label}</div>
+        <div style="font-size:13px;color:var(--muted);">${txs.length} transactions · ${MN[statsMonth]} ${statsYear}</div>
+      </div>
+      <div style="margin-left:auto;text-align:right;">
+        <div style="font-size:18px;font-weight:800;color:var(--red);">${fmtETB(total)}</div>
+        <div style="font-size:11px;color:var(--muted);">total</div>
+      </div>
+    </div>
+    <div style="background:var(--surface2);border-radius:12px;overflow:hidden;">
+      ${txs.length===0
+        ? `<div class="empty"><div class="empty-icon">${c.icon}</div>No transactions</div>`
+        : txs.map(t=>{
+            const a=acct(t.accountId);
+            return `<div class="list-row" onclick="W.closeModal();W.openDetail('${t.accountId}');W.setTab('expense');" style="cursor:pointer;">
+              <div class="list-icon" style="background:${a.color}22;font-size:18px;">${a.icon}</div>
+              <div class="list-info">
+                <div class="list-name">${t.name}</div>
+                <div class="list-sub">${a.name} · ${t.date}${t.note?' · '+t.note:''}</div>
+              </div>
+              <div class="list-right">
+                <div class="list-amount" style="color:var(--red);">${fmtETB(t.amount)}</div>
+              </div>
+            </div>`;
+          }).join('')
+      }
+    </div>`;
+  openModal();
 }
 
 function changeStatsMonth(dir){
@@ -1609,7 +1748,7 @@ window.W={
   openDebtModal, submitDebt, toggleDebt, deleteDebt,
   setImportCat,
   closeModal, closeModalOutside, doSignOut,
-  statsMonth: changeStatsMonth, reqNotif,
+  statsMonth: changeStatsMonth, reqNotif, openCatDetail,
   pinKey, tryFaceId, enableFaceId, unlockApp, resetPin,
   toggleFaceId, changePinFlow,
   uploadLogo, handleLogoUpload,
